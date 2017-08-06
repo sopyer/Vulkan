@@ -13,3 +13,5 @@ ipch/
 *.sdf
 *.VC.db
 *.vspx
+*.tmp
+

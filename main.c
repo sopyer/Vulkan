@@ -161,13 +161,8 @@ VkDevice device = VK_NULL_HANDLE;
 
 VkDeviceCreateInfo deviceCreateInfo = {
     .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-    .queueCreateInfoCount = 1,
-    .pQueueCreateInfos = 0,
-    .enabledLayerCount = 0,
-    .ppEnabledLayerNames = 0,
     .enabledExtensionCount = 1,
     .ppEnabledExtensionNames = (const char* const[]) { VK_KHR_SWAPCHAIN_EXTENSION_NAME },
-    .pEnabledFeatures = 0,
 };
 
 int init_device()
@@ -175,9 +170,6 @@ int init_device()
     uint32_t physicalDeviceCount;
     VkPhysicalDevice deviceHandles[MAX_DEVICE_COUNT];
     VkQueueFamilyProperties queueFamilyProperties[MAX_QUEUE_COUNT];
-    VkPhysicalDeviceProperties deviceProperties;
-    VkPhysicalDeviceFeatures deviceFeatures;
-    VkPhysicalDeviceMemoryProperties deviceMemoryProperties;
 
     vkEnumeratePhysicalDevices(instance, &physicalDeviceCount, 0);
     physicalDeviceCount = physicalDeviceCount > MAX_DEVICE_COUNT ? MAX_DEVICE_COUNT : physicalDeviceCount;
@@ -190,9 +182,6 @@ int init_device()
         queueFamilyCount = queueFamilyCount > MAX_QUEUE_COUNT ? MAX_QUEUE_COUNT : queueFamilyCount;
         vkGetPhysicalDeviceQueueFamilyProperties(deviceHandles[i], &queueFamilyCount, queueFamilyProperties);
 
-        vkGetPhysicalDeviceProperties(deviceHandles[i], &deviceProperties);
-        vkGetPhysicalDeviceFeatures(deviceHandles[i], &deviceFeatures);
-        vkGetPhysicalDeviceMemoryProperties(deviceHandles[i], &deviceMemoryProperties);
         for (uint32_t j = 0; j < queueFamilyCount; ++j) {
 
             VkBool32 supportsPresent = VK_FALSE;
@@ -212,6 +201,7 @@ int init_device()
         }
     }
 
+    deviceCreateInfo.queueCreateInfoCount = 1,
     deviceCreateInfo.pQueueCreateInfos = (VkDeviceQueueCreateInfo[]) {
         {
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
