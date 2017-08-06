@@ -1,0 +1,15 @@
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+build/
+
+.vs/
+ipch/
+*.ncb
+*.opendb
+*.opensdf
+*.sdf
+*.VC.db
+*.vspx
