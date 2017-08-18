@@ -205,9 +205,9 @@ int init_device()
     deviceCreateInfo.pQueueCreateInfos = (VkDeviceQueueCreateInfo[]) {
         {
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .queueFamilyIndex = queueFamilyIndex,
-            .queueCount = 1,
-            .pQueuePriorities = (const float[]) { 1.0f }
+                .queueFamilyIndex = queueFamilyIndex,
+                .queueCount = 1,
+                .pQueuePriorities = (const float[]) { 1.0f }
         }
     };
     VkResult result = vkCreateDevice(physicalDevice, &deviceCreateInfo, NULL, &device);
@@ -273,7 +273,7 @@ int init_swapchain()
         .imageColorSpace = surfaceFormat.colorSpace,
         .imageExtent = swapchainExtent,
         .imageArrayLayers = 1, // 2 for stereo
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = surfaceCapabilities.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -299,6 +299,100 @@ void fini_swapchain()
 }
 
 //----------------------------------------------------------
+
+VkRenderPass renderPass;
+
+int createRenderPass()
+{
+    VkRenderPassCreateInfo renderPassCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &(VkAttachmentDescription) {
+            .format = surfaceFormat.format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        },
+        .subpassCount = 1,
+        .pSubpasses = &(VkSubpassDescription) {
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &(VkAttachmentReference) {
+                .attachment = 0,
+                .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            },
+        },
+        .dependencyCount = 1,
+        .pDependencies = &(VkSubpassDependency) {
+            .srcSubpass = VK_SUBPASS_EXTERNAL,
+            .dstSubpass = 0,
+            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dependencyFlags = 0,
+        },
+    };
+
+    vkCreateRenderPass(device, &renderPassCreateInfo, 0, &renderPass);
+
+    return 1;
+}
+
+void destroyRenderPass()
+{
+    vkDestroyRenderPass(device, renderPass, NULL);
+}
+
+VkImageView swapchainImageViews[MAX_SWAPCHAIN_IMAGES];
+VkFramebuffer framebuffers[MAX_SWAPCHAIN_IMAGES];
+
+int createFramebuffers()
+{
+    for (uint32_t i = 0; i < swapchainImageCount; ++i)
+    {
+        VkImageViewCreateInfo createInfo = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = swapchainImages[i],
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = surfaceFormat.format,
+            .subresourceRange = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+        };
+        vkCreateImageView(device, &createInfo, 0, &swapchainImageViews[i]);
+
+        VkFramebufferCreateInfo framebufferCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = renderPass,
+            .attachmentCount = 1,
+            .pAttachments = &swapchainImageViews[i],
+            .width = swapchainExtent.width,
+            .height = swapchainExtent.height,
+            .layers = 1,
+        };
+        vkCreateFramebuffer(device, &framebufferCreateInfo, 0, &framebuffers[i]);
+    }
+
+    return 1;
+}
+
+void destroyFramebuffers()
+{
+    for (uint32_t i = 0; i < swapchainImageCount; ++i)
+    {
+        vkDestroyFramebuffer(device, framebuffers[i], NULL);
+        vkDestroyImageView(device, swapchainImageViews[i], NULL);
+    }
+}
 
 uint32_t frameIndex = 0;
 VkCommandPool commandPool;
@@ -341,12 +435,17 @@ int init_render()
     vkCreateFence(device, &fenceCreateInfo, 0, &frameFences[0]);
     vkCreateFence(device, &fenceCreateInfo, 0, &frameFences[1]);
 
+    createRenderPass();
+    createFramebuffers();
+
     return 1;
 }
 
 void fini_render()
 {
     vkDeviceWaitIdle(device);
+    destroyFramebuffers();
+    destroyRenderPass();
     vkDestroyFence(device, frameFences[0], 0);
     vkDestroyFence(device, frameFences[1], 0);
     vkDestroySemaphore(device, renderFinishedSemaphores[0], 0);
@@ -371,50 +470,19 @@ void draw_frame()
     };
     vkBeginCommandBuffer(commandBuffers[index], &beginInfo);
 
-    VkImageSubresourceRange subResourceRange = {
-        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .baseMipLevel = 0,
-        .levelCount = VK_REMAINING_MIP_LEVELS,
-        .baseArrayLayer = 0,
-        .layerCount = VK_REMAINING_ARRAY_LAYERS,
-    };
-
-    // Change layout of image to be optimal for clearing
-    vkCmdPipelineBarrier(commandBuffers[index],
-        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0, 0, NULL, 0, NULL, 1,
-        &(VkImageMemoryBarrier) {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = 0,
-            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = queueFamilyIndex,
-            .dstQueueFamilyIndex = queueFamilyIndex,
-            .image = swapchainImages[imageIndex],
-            .subresourceRange = subResourceRange,
-    }
+    vkCmdBeginRenderPass(commandBuffers[index],
+        &(VkRenderPassBeginInfo) {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = renderPass,
+        .framebuffer = framebuffers[imageIndex],
+        .clearValueCount = 1,
+        .pClearValues = &(VkClearValue) { 0.0f, 0.1f, 0.2f, 1.0f },
+        .renderArea.offset = (VkOffset2D) { .x = 0,.y = 0 },
+        .renderArea.extent = swapchainExtent,
+        },
+        VK_SUBPASS_CONTENTS_INLINE
     );
-    vkCmdClearColorImage(commandBuffers[index],
-        swapchainImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        &(VkClearColorValue){ {1.0f, 0, 0, 1.0f} }, 1, &subResourceRange
-    );
-    // Change layout of image to be optimal for presenting
-    vkCmdPipelineBarrier(commandBuffers[index],
-        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        0, 0, NULL, 0, NULL, 1,
-        &(VkImageMemoryBarrier){
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            .srcQueueFamilyIndex = queueFamilyIndex,
-            .dstQueueFamilyIndex = queueFamilyIndex,
-            .image = swapchainImages[imageIndex],
-            .subresourceRange = subResourceRange,
-    }
-    );
+    vkCmdEndRenderPass(commandBuffers[index]);
 
     vkEndCommandBuffer(commandBuffers[index]);
 
