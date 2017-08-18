@@ -507,6 +507,12 @@ int createPipeline()
 
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &(VkPushConstantRange) {
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+            .offset = 0,
+            .size = 20,
+        },
     };
     vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, 0, &pipelineLayout);
 
@@ -630,9 +636,21 @@ void draw_frame()
         VK_SUBPASS_CONTENTS_INLINE
     );
 
-    vkCmdBindPipeline(commandBuffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    static int px = 0, py = 0;
+    int x = 0, y = 0;
+    if (SDL_GetRelativeMouseState(&x, &y) & SDL_BUTTON(SDL_BUTTON_LEFT))
+    {
+        px += x; py += y;
+        px = px < 0 ? 0 : px; px = px > (int)swapchainExtent.width ? swapchainExtent.width : px;
+        py = py < 0 ? 0 : py; py = py >(int)swapchainExtent.height ? swapchainExtent.height : py;
+    }
+
+    float fragmentConstants[5] = { (float)swapchainExtent.width, (float)swapchainExtent.height, (float)px, (float)py, SDL_GetTicks() / 1000.0f };
+
+    vkCmdPushConstants(commandBuffers[index], pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(fragmentConstants), fragmentConstants);
     vkCmdSetViewport(commandBuffers[index], 0, 1, &(VkViewport){ 0.0f, 0.0f, (float)swapchainExtent.width, (float)swapchainExtent.height, 0.0f, 1.0f});
     vkCmdSetScissor(commandBuffers[index], 0, 1, &(VkRect2D){ {0, 0}, swapchainExtent});
+    vkCmdBindPipeline(commandBuffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdDraw(commandBuffers[index], 3, 1, 0, 0);
 
     vkCmdEndRenderPass(commandBuffers[index]);
