@@ -428,8 +428,8 @@ VkPipeline pipeline;
 
 int createPipeline()
 {
-    VkShaderModule vertexShader = createShaderModule("shaders\\fullscreentri.vert.spv");
-    VkShaderModule fragmentShader = createShaderModule("shaders\\rtprimitives.frag.spv");
+    VkShaderModule vertexShader = createShaderModule("shaders\\fullscreentri.spv-vs");
+    VkShaderModule fragmentShader = createShaderModule("shaders\\rtprimitives.spv-fs");
 
     const VkPipelineShaderStageCreateInfo stages[] = {
         {

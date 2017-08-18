@@ -1,0 +1,15 @@
+builddir = ../build/temp/shaders
+
+compile_glsl_vertex = cmd /c %VULKAN_SDK%\Bin32\glslangValidator -S vert
+compile_glsl_fragment = cmd /c %VULKAN_SDK%\Bin32\glslangValidator -S frag
+
+rule compile_glsl_vs
+    command = $compile_glsl_vertex -V $in -o $out
+
+rule compile_glsl_fs
+    command = $compile_glsl_fragment -V $in -o $out
+
+build shader.spv-vs: compile_glsl_vs shader.glsl-vs
+build fullscreentri.spv-vs: compile_glsl_vs fullscreentri.glsl-vs
+build shader.spv-fs: compile_glsl_fs shader.glsl-fs
+build rtprimitives.spv-fs: compile_glsl_fs rtprimitives.glsl-fs
