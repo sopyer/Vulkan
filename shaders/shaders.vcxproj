@@ -160,6 +160,8 @@
     <None Include="rtprimitives.glsl-fs" />
     <None Include="shader.glsl-fs" />
     <None Include="shader.glsl-vs" />
+    <None Include="vertex_color.glsl-fs" />
+    <None Include="vertex_color.glsl-vs" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

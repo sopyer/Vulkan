@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdarg.h>
+#include <assert.h>
 
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
@@ -9,8 +10,11 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <vulkan/vulkan.h>
 
+#include "bits.h"
 
 enum {
+    Kb = (1 << 10),
+    Mb = (1 << 20),
     MAX_DEVICE_COUNT = 8,
     MAX_QUEUE_COUNT = 4, //ATM there should be at most transfer, graphics, compute, graphics+compute families
     MAX_PRESENT_MODE_COUNT = 6, // At the moment in spec
@@ -18,12 +22,27 @@ enum {
     FRAME_COUNT = 2,
     PRESENT_MODE_MAILBOX_IMAGE_COUNT = 3,
     PRESENT_MODE_DEFAULT_IMAGE_COUNT = 2,
+    UPLOAD_REGION_SIZE = 64 * Kb,
+    UPLOAD_BUFFER_SIZE = FRAME_COUNT * UPLOAD_REGION_SIZE,
+};
+
+enum {
+    VULKAN_MEM_DEVICE_READBACK,
+    VULKAN_MEM_DEVICE_UPLOAD,
+    VULKAN_MEM_DEVICE_LOCAL,
+    VULKAN_MEM_COUNT
 };
 
 static uint32_t clamp_u32(uint32_t value, uint32_t min, uint32_t max)
 {
     return value < min ? min : (value > max ? max : value);
 }
+
+typedef struct tagVertexP2C
+{
+    float x, y;
+    uint32_t rgba;
+} VertexP2C;
 
 //----------------------------------------------------------
 
@@ -158,6 +177,21 @@ VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 uint32_t queueFamilyIndex;
 VkQueue queue;
 VkDevice device = VK_NULL_HANDLE;
+VkPhysicalDeviceMemoryProperties deviceMemProperties;
+uint32_t compatibleMemTypes[VULKAN_MEM_COUNT];
+
+uint32_t vkutFindCompatibleMemoryType(VkPhysicalDeviceMemoryProperties* memProperties, VkMemoryPropertyFlags flags)
+{
+    const uint32_t count = memProperties->memoryTypeCount;
+    uint32_t compatibleMemoryTypes = 0;
+    for (uint32_t i = 0; i < count; i++)
+    {
+        int isCompatible = ( memProperties->memoryTypes[i].propertyFlags & flags) == flags;
+        compatibleMemoryTypes |= (isCompatible << i);
+    }
+
+    return compatibleMemoryTypes;
+}
 
 VkDeviceCreateInfo deviceCreateInfo = {
     .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -213,6 +247,16 @@ int init_device()
     VkResult result = vkCreateDevice(physicalDevice, &deviceCreateInfo, NULL, &device);
 
     vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
+
+    vkGetPhysicalDeviceMemoryProperties(physicalDevice, &deviceMemProperties);
+    compatibleMemTypes[VULKAN_MEM_DEVICE_READBACK]
+        = vkutFindCompatibleMemoryType(&deviceMemProperties, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                                            | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    compatibleMemTypes[VULKAN_MEM_DEVICE_UPLOAD]
+        = vkutFindCompatibleMemoryType(&deviceMemProperties, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
+                                                            | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    compatibleMemTypes[VULKAN_MEM_DEVICE_LOCAL]
+        = vkutFindCompatibleMemoryType(&deviceMemProperties, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     return result == VK_SUCCESS;
 }
@@ -326,16 +370,6 @@ int createRenderPass()
                 .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
             },
         },
-        .dependencyCount = 1,
-        .pDependencies = &(VkSubpassDependency) {
-            .srcSubpass = VK_SUBPASS_EXTERNAL,
-            .dstSubpass = 0,
-            .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            .srcAccessMask = 0,
-            .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-            .dependencyFlags = 0,
-        },
     };
 
     vkCreateRenderPass(device, &renderPassCreateInfo, 0, &renderPass);
@@ -428,8 +462,8 @@ VkPipeline pipeline;
 
 int createPipeline()
 {
-    VkShaderModule vertexShader = createShaderModule("shaders\\fullscreentri.spv-vs");
-    VkShaderModule fragmentShader = createShaderModule("shaders\\rtprimitives.spv-fs");
+    VkShaderModule vertexShader = createShaderModule("shaders\\vertex_color.spv-vs");
+    VkShaderModule fragmentShader = createShaderModule("shaders\\vertex_color.spv-fs");
 
     const VkPipelineShaderStageCreateInfo stages[] = {
         {
@@ -447,6 +481,15 @@ int createPipeline()
     };
     VkPipelineVertexInputStateCreateInfo vertexInputState = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = (VkVertexInputBindingDescription[]) {
+            {.binding = 0, .stride = sizeof(VertexP2C), .inputRate = VK_VERTEX_INPUT_RATE_VERTEX}
+        },
+        .vertexAttributeDescriptionCount = 2,
+        .pVertexAttributeDescriptions = (VkVertexInputAttributeDescription[]) {
+            {.location = 0, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT,  .offset = offsetof(VertexP2C, x)},
+            {.location = 1, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM, .offset = offsetof(VertexP2C, rgba)}
+        },
     };
     VkPipelineInputAssemblyStateCreateInfo inputAssemblyState = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -507,12 +550,6 @@ int createPipeline()
 
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &(VkPushConstantRange) {
-            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-            .offset = 0,
-            .size = 20,
-        },
     };
     vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, 0, &pipelineLayout);
 
@@ -543,6 +580,45 @@ void destroyPipeline()
 {
     vkDestroyPipeline(device, pipeline, 0);
     vkDestroyPipelineLayout(device, pipelineLayout, 0);
+}
+
+VkBuffer uploadBuffer;
+VkDeviceMemory uploadBufferMemory;
+void* uploadBufferPtr;
+
+int createUploadBuffer()
+{
+    VkBufferCreateInfo bufferCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = UPLOAD_BUFFER_SIZE,
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+                | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 1,
+        .pQueueFamilyIndices = &queueFamilyIndex,
+    };
+    vkCreateBuffer(device, &bufferCreateInfo, NULL, &uploadBuffer);
+    VkMemoryRequirements memoryRequirements;
+    vkGetBufferMemoryRequirements(device, uploadBuffer, &memoryRequirements);
+
+    uint32_t memoryIndex = bit_ffs32(compatibleMemTypes[VULKAN_MEM_DEVICE_UPLOAD] & memoryRequirements.memoryTypeBits);
+    VkMemoryAllocateInfo allocInfo = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memoryRequirements.size,
+        .memoryTypeIndex = memoryIndex,
+    };
+    vkAllocateMemory(device, &allocInfo, NULL, &uploadBufferMemory);
+    vkBindBufferMemory(device, uploadBuffer, uploadBufferMemory, 0);
+    vkMapMemory(device, uploadBufferMemory, 0, VK_WHOLE_SIZE, 0, &uploadBufferPtr);
+
+    return TRUE;
+}
+
+void destroyUploadBuffer()
+{
+    vkFreeMemory(device, uploadBufferMemory, NULL);
+    vkDestroyBuffer(device, uploadBuffer, NULL);
 }
 
 uint32_t frameIndex = 0;
@@ -589,6 +665,7 @@ int init_render()
     createRenderPass();
     createFramebuffers();
     createPipeline();
+    createUploadBuffer();
 
     return 1;
 }
@@ -596,6 +673,7 @@ int init_render()
 void fini_render()
 {
     vkDeviceWaitIdle(device);
+    destroyUploadBuffer();
     destroyPipeline();
     destroyFramebuffers();
     destroyRenderPass();
@@ -613,6 +691,14 @@ void draw_frame()
     uint32_t index = (frameIndex++) % FRAME_COUNT;
     vkWaitForFences(device, 1, &frameFences[index], VK_TRUE, UINT64_MAX);
     vkResetFences(device, 1, &frameFences[index]);
+
+    VkDeviceSize uploadFrameOffset = index * UPLOAD_REGION_SIZE;
+    VertexP2C vertices[] = {
+        {  0.0f, -0.5f, 0xFF0000FF },
+        {  0.5f,  0.5f, 0xFF00FF00 },
+        { -0.5f,  0.5f, 0xFFFF0000 }
+    };
+    memcpy((uint8_t*)uploadBufferPtr + uploadFrameOffset, vertices, sizeof(vertices));
 
     uint32_t imageIndex;
     vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphores[index], VK_NULL_HANDLE, &imageIndex);
@@ -636,21 +722,11 @@ void draw_frame()
         VK_SUBPASS_CONTENTS_INLINE
     );
 
-    static int px = 0, py = 0;
-    int x = 0, y = 0;
-    if (SDL_GetRelativeMouseState(&x, &y) & SDL_BUTTON(SDL_BUTTON_LEFT))
-    {
-        px += x; py += y;
-        px = px < 0 ? 0 : px; px = px > (int)swapchainExtent.width ? swapchainExtent.width : px;
-        py = py < 0 ? 0 : py; py = py >(int)swapchainExtent.height ? swapchainExtent.height : py;
-    }
-
-    float fragmentConstants[5] = { (float)swapchainExtent.width, (float)swapchainExtent.height, (float)px, (float)py, SDL_GetTicks() / 1000.0f };
-
-    vkCmdPushConstants(commandBuffers[index], pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(fragmentConstants), fragmentConstants);
+    vkCmdBindPipeline(commandBuffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdSetViewport(commandBuffers[index], 0, 1, &(VkViewport){ 0.0f, 0.0f, (float)swapchainExtent.width, (float)swapchainExtent.height, 0.0f, 1.0f});
     vkCmdSetScissor(commandBuffers[index], 0, 1, &(VkRect2D){ {0, 0}, swapchainExtent});
-    vkCmdBindPipeline(commandBuffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindVertexBuffers(commandBuffers[index], 0, 1, &uploadBuffer, (VkDeviceSize[]) { 0 });
+
     vkCmdDraw(commandBuffers[index], 3, 1, 0, 0);
 
     vkCmdEndRenderPass(commandBuffers[index]);
@@ -661,7 +737,7 @@ void draw_frame()
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = &imageAvailableSemaphores[index],
-        .pWaitDstStageMask = (VkPipelineStageFlags[]) { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT },
+        .pWaitDstStageMask = (VkPipelineStageFlags[]) { VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT },
         .commandBufferCount = 1,
         .pCommandBuffers = &commandBuffers[index],
         .signalSemaphoreCount = 1,

@@ -19,5 +19,11 @@
       <Filter>shaders</Filter>
     </None>
     <None Include="build.ninja" />
+    <None Include="vertex_color.glsl-fs">
+      <Filter>shaders</Filter>
+    </None>
+    <None Include="vertex_color.glsl-vs">
+      <Filter>shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

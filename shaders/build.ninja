@@ -9,6 +9,8 @@ rule compile_glsl_vs
 rule compile_glsl_fs
     command = $compile_glsl_fragment -V $in -o $out
 
+build vertex_color.spv-vs: compile_glsl_vs vertex_color.glsl-vs
+build vertex_color.spv-fs: compile_glsl_fs vertex_color.glsl-fs
 build shader.spv-vs: compile_glsl_vs shader.glsl-vs
 build fullscreentri.spv-vs: compile_glsl_vs fullscreentri.glsl-vs
 build shader.spv-fs: compile_glsl_fs shader.glsl-fs
