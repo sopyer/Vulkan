@@ -24,6 +24,7 @@ enum {
     PRESENT_MODE_DEFAULT_IMAGE_COUNT = 2,
     UPLOAD_REGION_SIZE = 64 * Kb,
     UPLOAD_BUFFER_SIZE = FRAME_COUNT * UPLOAD_REGION_SIZE,
+    STATIC_BUFFER_SIZE = 64 * Kb,
 };
 
 enum {
@@ -585,10 +586,17 @@ void destroyPipeline()
 VkBuffer uploadBuffer;
 VkDeviceMemory uploadBufferMemory;
 void* uploadBufferPtr;
+VkBuffer staticBuffer;
+VkDeviceMemory staticBufferMemory;
 
 int createUploadBuffer()
 {
-    VkBufferCreateInfo bufferCreateInfo = {
+    VkBufferCreateInfo bufferCreateInfo;
+    VkMemoryAllocateInfo allocInfo;
+    VkMemoryRequirements memoryRequirements;
+    uint32_t memoryIndex;
+
+    bufferCreateInfo = (VkBufferCreateInfo){
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = UPLOAD_BUFFER_SIZE,
         .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
@@ -599,11 +607,10 @@ int createUploadBuffer()
         .pQueueFamilyIndices = &queueFamilyIndex,
     };
     vkCreateBuffer(device, &bufferCreateInfo, NULL, &uploadBuffer);
-    VkMemoryRequirements memoryRequirements;
     vkGetBufferMemoryRequirements(device, uploadBuffer, &memoryRequirements);
 
-    uint32_t memoryIndex = bit_ffs32(compatibleMemTypes[VULKAN_MEM_DEVICE_UPLOAD] & memoryRequirements.memoryTypeBits);
-    VkMemoryAllocateInfo allocInfo = {
+    memoryIndex = bit_ffs32(compatibleMemTypes[VULKAN_MEM_DEVICE_UPLOAD] & memoryRequirements.memoryTypeBits);
+    allocInfo = (VkMemoryAllocateInfo){
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = memoryRequirements.size,
         .memoryTypeIndex = memoryIndex,
@@ -612,11 +619,36 @@ int createUploadBuffer()
     vkBindBufferMemory(device, uploadBuffer, uploadBufferMemory, 0);
     vkMapMemory(device, uploadBufferMemory, 0, VK_WHOLE_SIZE, 0, &uploadBufferPtr);
 
+    bufferCreateInfo = (VkBufferCreateInfo){
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = STATIC_BUFFER_SIZE,
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+        | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+        | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 1,
+        .pQueueFamilyIndices = &queueFamilyIndex,
+    };
+    vkCreateBuffer(device, &bufferCreateInfo, NULL, &staticBuffer);
+    vkGetBufferMemoryRequirements(device, staticBuffer, &memoryRequirements);
+
+    memoryIndex = bit_ffs32(compatibleMemTypes[VULKAN_MEM_DEVICE_LOCAL] & memoryRequirements.memoryTypeBits);
+    allocInfo = (VkMemoryAllocateInfo){
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memoryRequirements.size,
+        .memoryTypeIndex = memoryIndex,
+    };
+    vkAllocateMemory(device, &allocInfo, NULL, &staticBufferMemory);
+    vkBindBufferMemory(device, staticBuffer, staticBufferMemory, 0);
+
     return TRUE;
 }
 
 void destroyUploadBuffer()
 {
+    vkFreeMemory(device, staticBufferMemory, NULL);
+    vkDestroyBuffer(device, staticBuffer, NULL);
+
     vkFreeMemory(device, uploadBufferMemory, NULL);
     vkDestroyBuffer(device, uploadBuffer, NULL);
 }
@@ -688,17 +720,40 @@ void fini_render()
 
 void draw_frame()
 {
-    uint32_t index = (frameIndex++) % FRAME_COUNT;
+    uint32_t index = frameIndex % FRAME_COUNT;
     vkWaitForFences(device, 1, &frameFences[index], VK_TRUE, UINT64_MAX);
     vkResetFences(device, 1, &frameFences[index]);
 
-    VkDeviceSize uploadFrameOffset = index * UPLOAD_REGION_SIZE;
-    VertexP2C vertices[] = {
-        {  0.0f, -0.5f, 0xFF0000FF },
-        {  0.5f,  0.5f, 0xFF00FF00 },
-        { -0.5f,  0.5f, 0xFFFF0000 }
+    size_t uploadOffset = index * UPLOAD_REGION_SIZE;
+    size_t uploadLimit = uploadOffset + UPLOAD_REGION_SIZE;
+    uint8_t* uploadPtr = (uint8_t*)uploadBufferPtr;
+
+    uint32_t mask = (SDL_GetTicks() >> 3) & 0x1FF;
+    mask = mask > 0xFF ? 0x1FF - mask : mask;
+    mask = (mask << 16) | (mask << 8) | mask;
+    VertexP2C dynamicVertices[] = {
+        { -0.5f, -1.0f, 0xFF0000FF|mask },
+        {  0.0f,  0.0f, 0xFF00FF00|mask },
+        { -1.0f,  0.0f, 0xFFFF0000|mask }
     };
-    memcpy((uint8_t*)uploadBufferPtr + uploadFrameOffset, vertices, sizeof(vertices));
+    memcpy(uploadPtr+uploadOffset, dynamicVertices, sizeof(dynamicVertices));
+    uploadOffset += sizeof(dynamicVertices);
+
+    VkBufferCopy bufferCopyInfo;
+    if (frameIndex == 0)
+    {
+        VertexP2C staticVertices[] = {
+            { 0.5f, 0.0f, 0xFF0000FF },
+            { 1.0f, 1.0f, 0xFF00FF00 },
+            { 0.0f, 1.0f, 0xFFFF0000 }
+        };
+        memcpy(uploadPtr + uploadOffset, staticVertices, sizeof(staticVertices));
+        bufferCopyInfo = (VkBufferCopy){
+            .srcOffset = uploadOffset,
+            .dstOffset = 0,
+            .size = sizeof(staticVertices),
+        };
+    }
 
     uint32_t imageIndex;
     vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailableSemaphores[index], VK_NULL_HANDLE, &imageIndex);
@@ -708,6 +763,20 @@ void draw_frame()
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
     };
     vkBeginCommandBuffer(commandBuffers[index], &beginInfo);
+
+    if (frameIndex == 0)
+    {
+        vkCmdCopyBuffer(commandBuffers[index], uploadBuffer, staticBuffer, 1, &bufferCopyInfo);
+        vkCmdPipelineBarrier(commandBuffers[index],
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 
+            1, &(VkMemoryBarrier){
+                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT
+            },
+            0, NULL, 0, NULL
+        );
+    }
 
     vkCmdBeginRenderPass(commandBuffers[index],
         &(VkRenderPassBeginInfo) {
@@ -725,8 +794,11 @@ void draw_frame()
     vkCmdBindPipeline(commandBuffers[index], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdSetViewport(commandBuffers[index], 0, 1, &(VkViewport){ 0.0f, 0.0f, (float)swapchainExtent.width, (float)swapchainExtent.height, 0.0f, 1.0f});
     vkCmdSetScissor(commandBuffers[index], 0, 1, &(VkRect2D){ {0, 0}, swapchainExtent});
-    vkCmdBindVertexBuffers(commandBuffers[index], 0, 1, &uploadBuffer, (VkDeviceSize[]) { 0 });
 
+    vkCmdBindVertexBuffers(commandBuffers[index], 0, 1, &uploadBuffer, (VkDeviceSize[]) { 0 });
+    vkCmdDraw(commandBuffers[index], 3, 1, 0, 0);
+
+    vkCmdBindVertexBuffers(commandBuffers[index], 0, 1, &staticBuffer, (VkDeviceSize[]) { 0 });
     vkCmdDraw(commandBuffers[index], 3, 1, 0, 0);
 
     vkCmdEndRenderPass(commandBuffers[index]);
@@ -754,6 +826,8 @@ void draw_frame()
         .pImageIndices = &imageIndex,
     };
     vkQueuePresentKHR(queue, &presentInfo);
+
+    ++frameIndex;
 }
 
 //----------------------------------------------------------
